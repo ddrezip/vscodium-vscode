@@ -1,0 +1,125 @@
+name: Recompress VSCodium + VSCode
+
+on:
+  push:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  recompress:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Install required software
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full jq curl unzip
+
+      - name: Get latest VSCodium release info
+        id: get_vscodium
+        run: |
+          # Get latest stable VSCodium release (non-prerelease)
+          rel=$(curl -s https://api.github.com/repos/VSCodium/vscodium/releases \
+            | jq 'map(select(.prerelease == false)) | .[0]')
+
+          codium_tag=$(echo "$rel" | jq -r .tag_name)
+          codium_title=$(echo "$rel" | jq -r .name)
+
+          # Pick the Windows zip asset (win32-x64)
+          codium_url=$(echo "$rel" | jq -r '.assets[] | select(.name | test("win32-x64.*\\.zip$")) | .browser_download_url' | head -n1)
+
+          echo "codium_tag=$codium_tag" >> $GITHUB_OUTPUT
+          echo "codium_title=$codium_title" >> $GITHUB_OUTPUT
+          echo "codium_url=$codium_url" >> $GITHUB_OUTPUT
+
+      - name: Get latest VSCode stable version info
+        id: get_vscode
+        run: |
+          url="https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-archive"
+
+          # Get final redirected URL without downloading the file
+          redirected=$(curl -s -L -I -o /dev/null -w "%{url_effective}" "$url")
+          fname=$(basename "$redirected")
+
+          # Example: VSCode-win32-x64-1.105.0.zip
+          vscode_version=$(echo "$fname" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)*' | head -n1)
+
+          echo "vscode_version=$vscode_version" >> $GITHUB_OUTPUT
+          echo "vscode_url=$redirected" >> $GITHUB_OUTPUT
+
+      - name: Determine combined tag & display versions
+        id: combine
+        run: |
+          codium_tag="${{ steps.get_vscodium.outputs.codium_tag }}"
+          vscode_ver="${{ steps.get_vscode.outputs.vscode_version }}"
+          codium_display="${codium_tag#v}"  # strip leading 'v' for display
+          combined_tag="${codium_tag}-${vscode_ver}"
+
+          echo "codium_display=$codium_display" >> $GITHUB_OUTPUT
+          echo "combined_tag=$combined_tag" >> $GITHUB_OUTPUT
+
+      - name: Check if combined release already exists
+        id: check_release
+        run: |
+          tag="${{ steps.combine.outputs.combined_tag }}"
+          existing=$(curl -s \
+            -H "Authorization: token ${{ vars.PAT_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${tag}")
+          if echo "$existing" | grep -q '"id":'; then
+            echo "already_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "already_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download & recompress VSCodium and VSCode
+        if: steps.check_release.outputs.already_exists == 'false'
+        run: |
+          set -euo pipefail
+          codium_tag="${{ steps.get_vscodium.outputs.codium_tag }}"
+          vscode_ver="${{ steps.get_vscode.outputs.vscode_version }}"
+          codium_url="${{ steps.get_vscodium.outputs.codium_url }}"
+          vscode_url="${{ steps.get_vscode.outputs.vscode_url }}"
+
+          mkdir work
+          cd work
+
+          # --- VSCodium ---
+          echo "Downloading VSCodium..."
+          curl -L -o VSCodium.zip "$codium_url"
+          mkdir codium
+          unzip -q VSCodium.zip -d codium
+          7z a -t7z -mx=9 "../VSCodium-${codium_tag}.7z" ./codium/*
+          rm -rf codium VSCodium.zip
+
+          # --- VSCode ---
+          echo "Downloading VSCode..."
+          curl -L -o VSCode.zip "$vscode_url"
+          mkdir vscode
+          unzip -q VSCode.zip -d vscode
+          7z a -t7z -mx=9 "../VSCode-${vscode_ver}.7z" ./vscode/*
+          rm -rf vscode VSCode.zip
+
+          cd ..
+          rm -rf work
+
+      - name: Create new combined release
+        if: steps.check_release.outputs.already_exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.combine.outputs.combined_tag }}
+          name: "VSCodium v${{ steps.combine.outputs.codium_display }} + VSCode v${{ steps.get_vscode.outputs.vscode_version }}, recompressed"
+          body: |
+            Recompressed from:
+            - VSCodium release: [${{ steps.get_vscodium.outputs.codium_tag }}](https://github.com/VSCodium/vscodium/releases/tag/${{ steps.get_vscodium.outputs.codium_tag }})
+            - VSCode stable build: [${{ steps.get_vscode.outputs.vscode_version }}](${{ steps.get_vscode.outputs.vscode_url }})
+          draft: false
+          prerelease: false
+          files: |
+            VSCodium-${{ steps.get_vscodium.outputs.codium_tag }}.7z
+            VSCode-${{ steps.get_vscode.outputs.vscode_version }}.7z
+        env:
+          GITHUB_TOKEN: ${{ vars.PAT_TOKEN }}
