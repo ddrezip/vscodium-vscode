@@ -3,7 +3,7 @@ name: Recompress VSCodium + VSCode
 on:
   push:
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "0 2,14 * * *"
   workflow_dispatch:
 
 jobs:
