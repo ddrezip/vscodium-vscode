@@ -121,5 +121,4 @@ jobs:
           files: |
             VSCodium-${{ steps.get_vscodium.outputs.codium_tag }}.7z
             VSCode-${{ steps.get_vscode.outputs.vscode_version }}.7z
-        env:
-          GITHUB_TOKEN: ${{ vars.PAT_TOKEN }}
+          token: ${{ vars.PAT_TOKEN }}
